@@ -29,8 +29,7 @@ SCENARIOS = {
     '알루미늄': {'k': 200.0, 'rho': 2700, 'cp': 900},
 }
 
-# --- 3. 최적화된 다층 구조 시뮬레이션 함수 ---
-# @st.cache_data: 동일한 입력에 대해 결과를 캐싱하여 반복 계산 방지
+# --- 3. 최적화 및 오류 수정된 시뮬레이션 함수 ---
 @st.cache_data
 def run_multilayer_simulation(materials, thicknesses_m, T_hot_c=1000, T_initial_c=20, T_target_c=120, sim_time_minutes=15, stop_at_target=False):
     T_hot = T_hot_c + 273.15
@@ -42,7 +41,6 @@ def run_multilayer_simulation(materials, thicknesses_m, T_hot_c=1000, T_initial_
     if L_x == 0: return None, None, None, None
     L_y = 0.1
     
-    # 최적화 1: 격자 해상도 조정 (계산량 감소)
     nx, ny = 60, 6
     dx = L_x / (nx - 1)
     dy = L_y / (ny - 1)
@@ -72,13 +70,17 @@ def run_multilayer_simulation(materials, thicknesses_m, T_hot_c=1000, T_initial_
     for t_step in range(nt):
         T_old = T.copy()
         
-        # 최적화 2: NumPy 벡터화를 통해 내부 루프 제거 (속도 대폭 향상)
+        # === 핵심 오류 수정 부분 ===
+        # 이전 시간(T_old)을 기준으로 Laplacian(온도 변화율) 계산
         laplacian_x = (T_old[1:-1, 2:] - 2 * T_old[1:-1, 1:-1] + T_old[1:-1, :-2]) / dx**2
         laplacian_y = (T_old[2:, 1:-1] - 2 * T_old[1:-1, 1:-1] + T_old[:-2, 1:-1]) / dy**2
         
-        # alpha_map을 2D 연산에 맞게 브로드캐스팅
         alpha_slice = alpha_map[1:-1]
-        T[1:-1, 1:-1] += alpha_slice * dt * (laplacian_x + laplacian_y)
+        
+        # 계산된 변화량을 T_old에 더하여 다음 시간(T)의 온도를 계산
+        change_in_T = alpha_slice * dt * (laplacian_x + laplacian_y)
+        T[1:-1, 1:-1] = T_old[1:-1, 1:-1] + change_in_T
+        # ==========================
 
         # 경계 조건 적용
         T[:, 0] = T_hot; T[:, -1] = T[:, -2]; T[0, :] = T[1, :]; T[-1, :] = T[-2, :]
@@ -88,7 +90,7 @@ def run_multilayer_simulation(materials, thicknesses_m, T_hot_c=1000, T_initial_
         
         if time_to_target is None and current_inner_temp_k >= T_target_kelvin:
             time_to_target = time_points[t_step] / 60
-            if stop_at_target: # 목표 도달 시 조기 종료 옵션
+            if stop_at_target:
                 return time_points[:t_step+1], temp_history_celsius[:t_step+1], T - 273.15, time_to_target
             
     return time_points, temp_history_celsius, T - 273.15, time_to_target
@@ -107,17 +109,18 @@ st.markdown(f"각 재료를 **{max_thickness_mm}mm** 두께로 단독 사용했�
 
 if st.button("단일 재료 분석 시작"):
     results = []
-    # UI 개선: 프로그레스 바 추가
     st.info("각 재료의 성능을 분석 중입니다. 캐싱 기능으로 두 번째 실행부터는 즉시 완료됩니다.")
     progress_bar = st.progress(0, text="분석 시작...")
     
-    for i, (name, props) in enumerate(SCENARIOS.items()):
+    sorted_scenarios = sorted(SCENARIOS.items(), key=lambda item: item[1]['k']) # 단열 성능 좋은 순으로 정렬
+
+    for i, (name, props) in enumerate(sorted_scenarios):
         progress_bar.progress((i + 1) / len(SCENARIOS), text=f"분석 중: {name}")
         _, _, _, time_to_target = run_multilayer_simulation(
-            materials=[props],
+            materials=[(name, props)], # 캐싱을 위해 이름도 함께 전달
             thicknesses_m=[max_thickness_mm / 1000.0],
             sim_time_minutes=target_delay_min * 3,
-            stop_at_target=True # 단일 분석에서는 목표 도달 시 바로 종료하여 시간 절약
+            stop_at_target=True
         )
         
         delay_str = f"{time_to_target:.2f} 분" if time_to_target else f"{target_delay_min * 3}분 이상"
@@ -146,10 +149,11 @@ selected_materials = st.multiselect(
 if len(selected_materials) == 3:
     st.subheader("두께 분배")
     cols = st.columns(3)
-    thicknesses = [max_thickness_mm / 3] * 3 # 기본값
+    thicknesses = []
     for i, mat_name in enumerate(selected_materials):
         with cols[i]:
-            thicknesses[i] = st.slider(f"Layer {i+1}: {mat_name} (mm)", 0.0, max_thickness_mm, thicknesses[i], 0.5, key=f"thick_{i}")
+            # UI 개선: 재료가 바뀌면 슬라이더의 기본값도 재설정되도록 key 사용
+            thicknesses.append(st.slider(f"Layer {i+1}: {mat_name} (mm)", 0.0, max_thickness_mm, max_thickness_mm / 3, 0.5, key=f"thick_{i}_{mat_name}"))
 
     total_selected_thickness = sum(thicknesses)
     if total_selected_thickness > max_thickness_mm:
@@ -162,7 +166,7 @@ if len(selected_materials) == 3:
             st.error("두께를 0보다 크게 설정해야 시뮬레이션이 가능합니다.")
         else:
             with st.spinner("다층 구조 시뮬레이션을 진행 중입니다..."):
-                materials_to_sim = [SCENARIOS[name] for name in selected_materials]
+                materials_to_sim = [(name, SCENARIOS[name]) for name in selected_materials]
                 thicknesses_to_sim_m = [t / 1000.0 for t in thicknesses]
                 time_pts, temp_hist, _, time_to_target = run_multilayer_simulation(
                     materials=materials_to_sim,
