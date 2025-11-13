@@ -29,9 +29,9 @@ SCENARIOS = {
     '알루미늄': {'k': 200.0, 'rho': 2700, 'cp': 900},
 }
 
-# --- 3. 최적화 및 오류 수정된 시뮬레이션 함수 ---
+# --- 3. 오류 수정된 시뮬레이션 함수 ---
 @st.cache_data
-def run_multilayer_simulation(materials, thicknesses_m, T_hot_c=1000, T_initial_c=20, T_target_c=120, sim_time_minutes=15, stop_at_target=False):
+def run_multilayer_simulation(materials, thicknesses_m, material_names=None, T_hot_c=1000, T_initial_c=20, T_target_c=120, sim_time_minutes=15, stop_at_target=False):
     T_hot = T_hot_c + 273.15
     T_initial = T_initial_c + 273.15
     T_target_kelvin = T_target_c + 273.15
@@ -45,9 +45,11 @@ def run_multilayer_simulation(materials, thicknesses_m, T_hot_c=1000, T_initial_
     dx = L_x / (nx - 1)
     dy = L_y / (ny - 1)
 
-    alpha_map = np.zeros(nx)
+    # === 핵심 오류 수정 부분 1: 입력 데이터 구조 수정 ===
+    # 이제 'materials'는 순수한 딕셔너리의 리스트로 전달됨
     alphas = [mat['k'] / (mat['rho'] * mat['cp']) for mat in materials]
     
+    alpha_map = np.zeros(nx)
     current_pos_m = 0
     start_idx = 0
     for i, thick_m in enumerate(thicknesses_m):
@@ -70,19 +72,12 @@ def run_multilayer_simulation(materials, thicknesses_m, T_hot_c=1000, T_initial_
     for t_step in range(nt):
         T_old = T.copy()
         
-        # === 핵심 오류 수정 부분 ===
-        # 이전 시간(T_old)을 기준으로 Laplacian(온도 변화율) 계산
         laplacian_x = (T_old[1:-1, 2:] - 2 * T_old[1:-1, 1:-1] + T_old[1:-1, :-2]) / dx**2
         laplacian_y = (T_old[2:, 1:-1] - 2 * T_old[1:-1, 1:-1] + T_old[:-2, 1:-1]) / dy**2
-        
         alpha_slice = alpha_map[1:-1]
-        
-        # 계산된 변화량을 T_old에 더하여 다음 시간(T)의 온도를 계산
         change_in_T = alpha_slice * dt * (laplacian_x + laplacian_y)
         T[1:-1, 1:-1] = T_old[1:-1, 1:-1] + change_in_T
-        # ==========================
 
-        # 경계 조건 적용
         T[:, 0] = T_hot; T[:, -1] = T[:, -2]; T[0, :] = T[1, :]; T[-1, :] = T[-2, :]
         
         current_inner_temp_k = np.mean(T[:, -1])
@@ -112,13 +107,16 @@ if st.button("단일 재료 분석 시작"):
     st.info("각 재료의 성능을 분석 중입니다. 캐싱 기능으로 두 번째 실행부터는 즉시 완료됩니다.")
     progress_bar = st.progress(0, text="분석 시작...")
     
-    sorted_scenarios = sorted(SCENARIOS.items(), key=lambda item: item[1]['k']) # 단열 성능 좋은 순으로 정렬
+    sorted_scenarios = sorted(SCENARIOS.items(), key=lambda item: item[1]['k'])
 
     for i, (name, props) in enumerate(sorted_scenarios):
         progress_bar.progress((i + 1) / len(SCENARIOS), text=f"분석 중: {name}")
+        
+        # === 핵심 오류 수정 부분 2: 함수 호출 방식 수정 ===
         _, _, _, time_to_target = run_multilayer_simulation(
-            materials=[(name, props)], # 캐싱을 위해 이름도 함께 전달
+            materials=[props], # 순수 딕셔너리 리스트 전달
             thicknesses_m=[max_thickness_mm / 1000.0],
+            material_names=[name], # 캐싱을 위해 이름은 별도 인자로 전달
             sim_time_minutes=target_delay_min * 3,
             stop_at_target=True
         )
@@ -152,7 +150,6 @@ if len(selected_materials) == 3:
     thicknesses = []
     for i, mat_name in enumerate(selected_materials):
         with cols[i]:
-            # UI 개선: 재료가 바뀌면 슬라이더의 기본값도 재설정되도록 key 사용
             thicknesses.append(st.slider(f"Layer {i+1}: {mat_name} (mm)", 0.0, max_thickness_mm, max_thickness_mm / 3, 0.5, key=f"thick_{i}_{mat_name}"))
 
     total_selected_thickness = sum(thicknesses)
@@ -166,11 +163,13 @@ if len(selected_materials) == 3:
             st.error("두께를 0보다 크게 설정해야 시뮬레이션이 가능합니다.")
         else:
             with st.spinner("다층 구조 시뮬레이션을 진행 중입니다..."):
-                materials_to_sim = [(name, SCENARIOS[name]) for name in selected_materials]
+                # === 핵심 오류 수정 부분 3: 함수 호출 방식 수정 ===
+                materials_to_sim = [SCENARIOS[name] for name in selected_materials]
                 thicknesses_to_sim_m = [t / 1000.0 for t in thicknesses]
                 time_pts, temp_hist, _, time_to_target = run_multilayer_simulation(
-                    materials=materials_to_sim,
+                    materials=materials_to_sim, # 순수 딕셔너리 리스트 전달
                     thicknesses_m=thicknesses_to_sim_m,
+                    material_names=selected_materials, # 캐싱을 위해 이름은 별도 인자로 전달
                     sim_time_minutes=target_delay_min * 1.5
                 )
 
