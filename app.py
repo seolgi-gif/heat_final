@@ -29,7 +29,7 @@ SCENARIOS = {
     '알루미늄': {'k': 200.0, 'rho': 2700, 'cp': 900},
 }
 
-# --- 3. 오류 수정된 시뮬레이션 함수 ---
+# --- 3. 시뮬레이션 함수 (이전과 동일) ---
 @st.cache_data
 def run_multilayer_simulation(materials, thicknesses_m, material_names=None, T_hot_c=1000, T_initial_c=20, T_target_c=120, sim_time_minutes=15, stop_at_target=False):
     T_hot = T_hot_c + 273.15
@@ -45,8 +45,6 @@ def run_multilayer_simulation(materials, thicknesses_m, material_names=None, T_h
     dx = L_x / (nx - 1)
     dy = L_y / (ny - 1)
 
-    # === 핵심 오류 수정 부분 1: 입력 데이터 구조 수정 ===
-    # 이제 'materials'는 순수한 딕셔너리의 리스트로 전달됨
     alphas = [mat['k'] / (mat['rho'] * mat['cp']) for mat in materials]
     
     alpha_map = np.zeros(nx)
@@ -93,104 +91,132 @@ def run_multilayer_simulation(materials, thicknesses_m, material_names=None, T_h
 # --- 4. Streamlit UI 구성 ---
 st.set_page_config(layout="wide")
 st.title("🚗 자동차 배터리 열차폐 시스템 설계 시뮬레이션")
-st.markdown("외부 1000°C 화염 조건에서, 설정된 두께와 재료 조합에 따른 배터리 팩 내부 온도 변화를 예측합니다.")
+st.markdown("""
+이 앱은 **다층(Multi-layer) 구조**가 동일한 두께의 **단일(Single-layer) 구조**보다 얼마나 더 효율적인지 비교 분석하여 최적의 열차폐 설계를 찾는 데 도움을 줍니다.
+""")
 
 st.sidebar.header("⚙️ 1. 기본 조건 설정")
-max_thickness_mm = st.sidebar.number_input("최대 허용 두께 (mm)", 5.0, 100.0, 30.0, 1.0)
+max_thickness_mm = st.sidebar.number_input("최대 허용 두께 (mm)", 5.0, 100.0, 50.0, 1.0) # 기본값 50mm로 변경
 target_delay_min = st.sidebar.number_input("목표 지연 시간 (분)", 1.0, 30.0, 5.0, 0.5)
 
 st.header("📊 1단계: 단일 재료 성능 분석")
-st.markdown(f"각 재료를 **{max_thickness_mm}mm** 두께로 단독 사용했을 때, 내부 온도가 120°C에 도달하는 시간을 계산합니다.")
+st.markdown(f"각 재료를 **{max_thickness_mm}mm** 두께로 단독 사용했을 때의 기본 성능을 확인합니다.")
+
+if 'single_analysis_done' not in st.session_state:
+    st.session_state.single_analysis_done = False
 
 if st.button("단일 재료 분석 시작"):
     results = []
-    st.info("각 재료의 성능을 분석 중입니다. 캐싱 기능으로 두 번째 실행부터는 즉시 완료됩니다.")
+    st.info("각 재료의 성능을 분석 중입니다...")
     progress_bar = st.progress(0, text="분석 시작...")
     
     sorted_scenarios = sorted(SCENARIOS.items(), key=lambda item: item[1]['k'])
-
     for i, (name, props) in enumerate(sorted_scenarios):
         progress_bar.progress((i + 1) / len(SCENARIOS), text=f"분석 중: {name}")
-        
-        # === 핵심 오류 수정 부분 2: 함수 호출 방식 수정 ===
         _, _, _, time_to_target = run_multilayer_simulation(
-            materials=[props], # 순수 딕셔너리 리스트 전달
-            thicknesses_m=[max_thickness_mm / 1000.0],
-            material_names=[name], # 캐싱을 위해 이름은 별도 인자로 전달
-            sim_time_minutes=target_delay_min * 3,
-            stop_at_target=True
+            materials=[props], thicknesses_m=[max_thickness_mm / 1000.0], material_names=[name],
+            sim_time_minutes=target_delay_min * 3, stop_at_target=True
         )
-        
         delay_str = f"{time_to_target:.2f} 분" if time_to_target else f"{target_delay_min * 3}분 이상"
         is_success = time_to_target is None or time_to_target >= target_delay_min
-        results.append({
-            "재료": name,
-            "120°C 도달 시간": delay_str,
-            f"목표({target_delay_min}분) 달성": "✅" if is_success else "❌"
-        })
+        results.append({"재료": name, "120°C 도달 시간": delay_str, f"목표({target_delay_min}분) 달성": "✅" if is_success else "❌"})
     
     progress_bar.empty()
     st.dataframe(pd.DataFrame(results), use_container_width=True)
-    st.success("분석이 완료되었습니다. 위 결과를 바탕으로 아래에서 다층 구조를 설계하세요.")
+    st.success("분석 완료! 아래에서 다층 구조를 설계하여 단일 구조와 성능을 비교해보세요.")
+    st.session_state.single_analysis_done = True
 
-st.header("🛠️ 2단계: 다층 구조 설계 및 시뮬레이션")
-st.markdown("1단계 분석 결과를 바탕으로, 목표를 달성할 가능성이 높은 재료 3개를 조합하여 최적의 구조를 찾아보세요.")
+st.header("🛠️ 2단계: 다층 구조 설계 및 성능 비교")
+if not st.session_state.single_analysis_done:
+    st.info("먼저 1단계 분석을 실행하여 각 재료의 기본 성능을 확인하세요.")
+else:
+    st.markdown("1단계 분석 결과를 바탕으로, 3개 재료를 조합하여 **단일 재료 대비 얼마나 성능이 향상되는지** 확인합니다.")
+    
+    material_options = list(SCENARIOS.keys())
+    selected_materials = st.multiselect("3개의 재료를 선택하세요 (외부 -> 내부 순서)", material_options, default=['세라믹 섬유', 'PCM (고체상태)', '에어로겔'], max_selections=3)
 
-material_options = list(SCENARIOS.keys())
-selected_materials = st.multiselect(
-    "3개의 재료를 선택하세요 (외부 -> 내부 순서)",
-    options=material_options,
-    default=['세라믹 섬유', 'PCM (고체상태)', '에어로겔'],
-    max_selections=3
-)
+    if len(selected_materials) == 3:
+        st.subheader("두께 분배")
+        cols = st.columns(3)
+        thicknesses = []
+        for i, mat_name in enumerate(selected_materials):
+            with cols[i]:
+                thicknesses.append(st.slider(f"Layer {i+1}: {mat_name} (mm)", 0.0, max_thickness_mm, max_thickness_mm / 3, 0.5, key=f"thick_{i}_{mat_name}"))
 
-if len(selected_materials) == 3:
-    st.subheader("두께 분배")
-    cols = st.columns(3)
-    thicknesses = []
-    for i, mat_name in enumerate(selected_materials):
-        with cols[i]:
-            thicknesses.append(st.slider(f"Layer {i+1}: {mat_name} (mm)", 0.0, max_thickness_mm, max_thickness_mm / 3, 0.5, key=f"thick_{i}_{mat_name}"))
-
-    total_selected_thickness = sum(thicknesses)
-    if total_selected_thickness > max_thickness_mm:
-        st.error(f"선택한 두께의 총합({total_selected_thickness:.1f}mm)이 최대 허용 두께({max_thickness_mm}mm)를 초과했습니다.")
-    else:
-        st.info(f"현재 총 두께: {total_selected_thickness:.1f} mm / {max_thickness_mm} mm")
-
-    if st.button("다층 구조 시뮬레이션 실행", key="run_multilayer"):
-        if sum(thicknesses) <= 0:
-            st.error("두께를 0보다 크게 설정해야 시뮬레이션이 가능합니다.")
+        total_selected_thickness = sum(thicknesses)
+        if total_selected_thickness > max_thickness_mm:
+            st.error(f"선택한 두께의 총합({total_selected_thickness:.1f}mm)이 최대 허용 두께({max_thickness_mm}mm)를 초과했습니다.")
         else:
-            with st.spinner("다층 구조 시뮬레이션을 진행 중입니다..."):
-                # === 핵심 오류 수정 부분 3: 함수 호출 방식 수정 ===
-                materials_to_sim = [SCENARIOS[name] for name in selected_materials]
-                thicknesses_to_sim_m = [t / 1000.0 for t in thicknesses]
-                time_pts, temp_hist, _, time_to_target = run_multilayer_simulation(
-                    materials=materials_to_sim, # 순수 딕셔너리 리스트 전달
-                    thicknesses_m=thicknesses_to_sim_m,
-                    material_names=selected_materials, # 캐싱을 위해 이름은 별도 인자로 전달
-                    sim_time_minutes=target_delay_min * 1.5
-                )
+            st.info(f"현재 총 두께: {total_selected_thickness:.1f} mm / {max_thickness_mm} mm")
 
-            st.subheader("🚀 시뮬레이션 결과")
-            if time_pts is None:
-                st.error("시뮬레이션 조건을 계산할 수 없습니다.")
+        if st.button("다층 구조 시뮬레이션 및 성능 비교", key="run_multilayer"):
+            if total_selected_thickness <= 0:
+                st.error("두께를 0보다 크게 설정해야 시뮬레이션이 가능합니다.")
             else:
-                final_delay = time_to_target if time_to_target is not None else (target_delay_min * 1.5)
-                c1, c2 = st.columns(2)
-                c1.metric("120°C 도달 시간", f"{final_delay:.2f} 분" if time_to_target else f"{target_delay_min*1.5}분 이상")
-                c2.metric("목표 지연 시간 달성 여부", "✅ 성공" if final_delay >= target_delay_min else "❌ 실패")
+                with st.spinner("다층 구조 및 비교군(단일 구조) 시뮬레이션을 진행 중입니다..."):
+                    # 1. 다층 구조 시뮬레이션
+                    materials_multi = [SCENARIOS[name] for name in selected_materials]
+                    thicknesses_multi_m = [t / 1000.0 for t in thicknesses]
+                    time_pts_multi, temp_hist_multi, _, time_to_target_multi = run_multilayer_simulation(
+                        materials=materials_multi, thicknesses_m=thicknesses_multi_m, material_names=selected_materials,
+                        sim_time_minutes=target_delay_min * 2
+                    )
 
-                fig, ax = plt.subplots(figsize=(10, 5))
-                ax.plot(time_pts / 60, temp_hist, label="다층 구조 내부 온도", lw=2.5)
-                ax.axhline(y=120, color='r', linestyle='--', label='목표 최대 온도 (120°C)')
+                    # 2. 비교를 위한 단일 구조 시뮬레이션
+                    comparison_results = {}
+                    for name in selected_materials:
+                        time_pts_single, temp_hist_single, _, time_to_target_single = run_multilayer_simulation(
+                            materials=[SCENARIOS[name]], thicknesses_m=[total_selected_thickness / 1000.0], material_names=[f"single_{name}"],
+                            sim_time_minutes=target_delay_min * 2
+                        )
+                        comparison_results[name] = {
+                            "time_pts": time_pts_single, "temp_hist": temp_hist_single, "delay": time_to_target_single
+                        }
+
+                st.subheader("🚀 시뮬레이션 결과")
+                
+                # 성능 요약
+                st.markdown("##### 성능 요약")
+                delay_multi = time_to_target_multi if time_to_target_multi is not None else (target_delay_min * 2)
+                
+                best_single_name = ""
+                best_single_delay = -1
+                for name, result in comparison_results.items():
+                    current_delay = result['delay'] if result['delay'] is not None else (target_delay_min * 2)
+                    if current_delay > best_single_delay:
+                        best_single_delay = current_delay
+                        best_single_name = name
+
+                col1, col2, col3 = st.columns(3)
+                col1.metric("다층 구조 지연 시간", f"{delay_multi:.2f} 분")
+                col2.metric(f"최고 성능 단일 구조 ({best_single_name})", f"{best_single_delay:.2f} 분")
+                
+                if delay_multi > best_single_delay:
+                    improvement = delay_multi - best_single_delay
+                    col3.metric("성능 향상", f"✅ +{improvement:.2f} 분", help="다층 구조가 가장 좋은 단일 구조보다 지연 시간이 더 깁니다.")
+                else:
+                    decline = best_single_delay - delay_multi
+                    col3.metric("성능 저하", f"❌ -{decline:.2f} 분", help="다층 구조가 가장 좋은 단일 구조보다 성능이 낮습니다. 조합을 재고하세요.")
+
+                # 통합 그래프
+                st.markdown("##### 온도 변화 그래프")
+                fig, ax = plt.subplots(figsize=(10, 6))
+                
+                # 다층 구조 플롯 (실선)
+                ax.plot(time_pts_multi / 60, temp_hist_multi, label=f"다층 구조 ({total_selected_thickness:.1f}mm)", lw=3, color='crimson')
+                
+                # 단일 구조 플롯 (점선)
+                for name, result in comparison_results.items():
+                    ax.plot(result['time_pts'] / 60, result['temp_hist'], label=f"{name} 단일 ({total_selected_thickness:.1f}mm)", linestyle='--', alpha=0.8)
+
+                ax.axhline(y=120, color='k', linestyle=':', label='목표 최대 온도 (120°C)')
                 ax.axvline(x=target_delay_min, color='g', linestyle=':', label=f'목표 지연 시간 ({target_delay_min}분)')
-                ax.set_title('내부 표면 온도 변화', fontproperties=font_prop, fontsize=16)
+                ax.set_title('다층 구조 vs 단일 구조 성능 비교', fontproperties=font_prop, fontsize=16)
                 ax.set_xlabel('시간 (분)', fontproperties=font_prop)
                 ax.set_ylabel('온도 (°C)', fontproperties=font_prop)
-                ax.legend(prop=font_prop); ax.grid(True, linestyle=':'); ax.set_xlim(0, target_delay_min * 1.5)
-                ax.set_ylim(15, max(150, np.max(temp_hist) * 1.2) if len(temp_hist) > 0 else 150)
+                ax.legend(prop=font_prop, loc='best'); ax.grid(True, linestyle=':'); ax.set_xlim(0, target_delay_min * 2)
+                ax.set_ylim(15, max(150, np.max(temp_hist_multi) * 1.2) if len(temp_hist_multi) > 0 else 150)
                 st.pyplot(fig)
-else:
-    st.warning("먼저 3개의 재료를 선택해주세요.")
+    else:
+        st.warning("먼저 3개의 재료를 선택해주세요.")
+
